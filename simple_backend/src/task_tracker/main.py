@@ -1,6 +1,7 @@
 import json
 import os
 import requests
+from abc import ABC, abstractmethod
 from fastapi import FastAPI, Body
 from dotenv import load_dotenv
 
@@ -10,41 +11,69 @@ app = FastAPI()
 load_dotenv()
 
 
-class LLMManager:
-    '''Класс для решения задач с помощью LLM-модели'''
-    ai_token = os.getenv('AI_API_TOKEN')
-    API_BASE_URL = (
-        'https://api.cloudflare.com/client/v4/accounts/'
-        '20899bfe61320c4b5b2765c3cb8ed8be/ai/run/'
-    )
-    headers = {'Authorization': f'Bearer {ai_token}'}
-    model = '@cf/meta/llama-3-8b-instruct'
+class BaseHTTPClient(ABC):
+    '''Абстрактный класс для HTTP запросов'''
+    def __init__(self, token_env_var):
+        self.token = os.getenv(token_env_var)
+        if not self.token:
+            raise ValueError(f'Не установлен {token_env_var} токен.')
+        self.headers = self._build_headers()
+
+    @abstractmethod
+    def _build_headers(self):
+        pass
+
+    def get(self, url):
+        response = requests.get(url, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
+
+    def post(self, url, json_payload):
+        response = requests.post(url, headers=self.headers, json=json_payload)
+        response.raise_for_status()
+        return response.json()
+
+    def patch(self, url, json_payload):
+        response = requests.patch(url, headers=self.headers, json=json_payload)
+        response.raise_for_status()
+        return response.json()
+
+
+class LLMManager(BaseHTTPClient):
+    '''Класс-наследник для работы с LLM'''
+    def __init__(self):
+        super().__init__('AI_API_TOKEN')
+        self.api_base_url = (
+            'https://api.cloudflare.com/client/v4/accounts/'
+            '20899bfe61320c4b5b2765c3cb8ed8be/ai/run/'
+        )
+        self.model = '@cf/meta/llama-3-8b-instruct'
+
+    def _build_headers(self):
+        return {'Authorization': f'Bearer {self.token}'}
 
     def run_model(self, task):
         payload = {'prompt': f'How to solve this task: {task}'}
-        response = requests.post(
-            f'{self.API_BASE_URL}{self.model}',
-            headers=self.headers,
-            json=payload
+        url = f'{self.api_base_url}{self.model}'
+        response = self.post(url, payload)
+        return response['result']['response']
+
+
+class TaskFileManager(BaseHTTPClient):
+    '''Класс-наследник для работы с Github Gist'''
+    def __init__(self):
+        super().__init__('GIST_TOKEN')
+        self.github_api = (
+            'https://api.github.com/gists/'
+            'fedd8d87e748082ba834bd1db2829c8d'
         )
-        return response.json()['result']['response']
+        self.file_name = 'tasks.json'
 
-
-class TaskFileManager:
-    '''Класс для stateless бэкэнда - храним данные на Github Gist'''
-    github_api = (
-        'https://api.github.com/gists/'
-        'fedd8d87e748082ba834bd1db2829c8d'
-    )
-
-    gist_token = os.getenv('GIST_TOKEN')
-    file_name = 'tasks.json'
+    def _build_headers(self):
+        return {'Authorization': f'token {self.token}'}
 
     def load_tasks(self):
-        headers = {'Authorization': f'token {self.gist_token}'}
-        response = requests.get(self.github_api, headers=headers)
-        response.raise_for_status()
-        gist = response.json()
+        gist = self.get(self.github_api)
         content = gist['files'][self.file_name]['content']
         try:
             return json.loads(content)
@@ -59,13 +88,7 @@ class TaskFileManager:
                 }
             }
         }
-        headers = {'Authorization': f'token {self.gist_token}'}
-        response = requests.patch(
-            self.github_api,
-            json=payload,
-            headers=headers
-        )
-        response.raise_for_status()
+        self.patch(self.github_api, payload)
 
 
 file_class = TaskFileManager()
